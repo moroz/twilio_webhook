@@ -1,5 +1,7 @@
 use url::Url;
 
+mod hash;
+
 pub fn add(left: usize, right: usize) -> usize {
     left + right
 }
@@ -26,6 +28,19 @@ pub fn build_url_with_standard_port(url: Url) -> String {
         normalized_query,
         normalized_fragment
     );
+}
+
+pub fn add_port(url: Url) -> String {
+    if let Some(_) = url.port() {
+        return url.to_string();
+    }
+    build_url_with_standard_port(url)
+}
+
+pub fn remove_port(url: Url) -> String {
+    let mut new_url = url.clone();
+    new_url.set_port(None).unwrap();
+    new_url.to_string()
 }
 
 #[cfg(test)]
