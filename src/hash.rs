@@ -1,5 +1,9 @@
+use std::{any::Any, collections::BTreeMap};
+
+use crate::{add_port, remove_port};
 use hmac::{Hmac, Mac};
 use sha1::Sha1;
+use sha256::digest as sha256digest;
 
 type HmacSha1 = Hmac<Sha1>;
 
@@ -10,23 +14,72 @@ pub fn hmac_sha1_base64<'a>(key: impl Into<&'a [u8]>, data: impl Into<&'a [u8]>)
     base64::encode(bytes)
 }
 
-pub fn validate_body(body: String, signature: String) -> bool {
-    unimplemented!()
+pub fn validate_json_body(body: String, expected_signature: String) -> bool {
+    let signature = sha256digest(body);
+    signature == expected_signature
 }
 
-pub fn get_sha_hash_from_url(url: String) -> Option<String> {
+pub fn get_sha_hash_from_url(url: String) -> Result<Option<String>, url::ParseError> {
     let parsed = url::Url::parse(url.as_str());
-    if let Err(_) = parsed {
-        return None;
+    if let Err(err) = parsed {
+        return Err(err);
     }
     let parsed = parsed.unwrap();
     let pairs = parsed.query_pairs();
     for (key, value) in pairs {
         if key == "bodySHA256" {
-            return Some(value.to_owned().to_string());
+            return Ok(Some(value.to_owned().to_string()));
         }
     }
-    return None;
+    return Ok(None);
+}
+
+pub fn get_expected_twilio_signature<'a>(
+    auth_token: &'a str,
+    url: String,
+    params: &Vec<String>,
+) -> String {
+    let mut builder: Vec<u8> = Vec::with_capacity(1024);
+    builder.extend_from_slice(url.as_bytes());
+    for param in params {
+        builder.extend_from_slice(param.as_bytes());
+    }
+    return hmac_sha1_base64(auth_token.as_bytes(), builder.as_slice());
+}
+
+pub fn parse_and_sort_urlencoded_body(body: String) -> Vec<String> {
+    let parsed = form_urlencoded::parse(body.as_bytes());
+    let mut as_vec: Vec<_> = parsed.collect();
+    as_vec.sort_by_key(move |(k, _v)| k.clone());
+    as_vec.iter().map(|(k, v)| format!("{}{}", k, v)).collect()
+}
+
+pub fn validate_body(
+    auth_token: String,
+    url: String,
+    body: String,
+    expected_signature: String,
+) -> bool {
+    unimplemented!()
+}
+
+pub fn validate_urlencoded(
+    auth_token: String,
+    signature: String,
+    url: String,
+    body: String,
+) -> bool {
+    let params = parse_and_sort_urlencoded_body(body);
+    let parsed_url = url::Url::parse(url.as_str());
+    if let Err(_) = parsed_url {
+        return false;
+    }
+    let parsed_url = parsed_url.unwrap();
+    let signature_with_port =
+        get_expected_twilio_signature(auth_token.as_str(), add_port(&parsed_url), &params);
+    let signature_without_port =
+        get_expected_twilio_signature(auth_token.as_str(), remove_port(&parsed_url), &params);
+    return signature_with_port == signature || signature_without_port == signature;
 }
 
 pub fn validate_request_with_body(
@@ -35,13 +88,20 @@ pub fn validate_request_with_body(
     url: String,
     body: String,
 ) -> bool {
-    let sha_hash = get_sha_hash_from_url(url);
-    if sha_hash.is_none() {
-        return false;
+    // If the request has a bodySHA256 param, it is in JSON
+    match get_sha_hash_from_url(url.clone()) {
+        Err(_) => {
+            // Invalid URL
+            return false;
+        }
+        Ok(None) => {
+            // URL encoded form
+            return validate_urlencoded(auth_token, signature, url, body);
+        }
+        Ok(Some(sha_hash)) => {
+            return validate_json_body(body, sha_hash);
+        }
     }
-
-    validate_body(body, sha_hash.unwrap());
-    unimplemented!()
 }
 
 #[cfg(test)]
@@ -50,11 +110,12 @@ mod tests {
 
     #[test]
     fn test_get_hash_from_url() {
-        let body_signature = "0a1ff7634d9ab3b95db5c9a2dfe9416e41502b283a80c7cf19632632f96e6620";
+        let body_signature =
+            "0a1ff7634d9ab3b95db5c9a2dfe9416e41502b283a80c7cf19632632f96e6620".to_string();
         let request_url = "https://mycompany.com/myapp.php?foo=1&bar=2";
         let request_url_with_hash = format!("{}&bodySHA256={}", request_url, body_signature);
-        let actual = get_sha_hash_from_url(request_url_with_hash).unwrap();
-        assert_eq!(actual, body_signature.to_string());
+        let actual = get_sha_hash_from_url(request_url_with_hash);
+        assert_eq!(actual, Ok(Some(body_signature)));
     }
 
     #[test]
@@ -84,5 +145,12 @@ mod tests {
         );
 
         assert!(actual);
+    }
+
+    #[test]
+    fn test_validate_urlencoded_request() {
+        let token = "c73504dac708a5cd9f57e80c747bb488".to_string();
+        let signature = "cN6s/ajWzahiBNHjFpssnkbSQSM=".to_string();
+        let body = r#"AccountSid=ACe497b94cea336b5d573d9667ffda50bf&AddOns=%7B+%22status%22%3A+%22successful%22%2C+%22message%22%3A+null%2C+%22code%22%3A+null%2C+%22results%22%3A+%7B+%7D+%7D&ApiVersion=2010-04-01&From=%2B15017122661&FromCity=SAN+FRANCISCO&FromCountry=US&FromState=CA&FromZip=94903&To=%2B15558675310&ToCity=SAN+FRANCISCO&ToCountry=US&ToState=CA&ToZip=94105&Body=Ahoy&MessageSid=SMaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&NumMedia=0&NumSegments=1&ReferralNumMedia=0&SmsMessageSid=SMaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&SmsSid=SMaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&SmsStatus=received"#;
     }
 }
