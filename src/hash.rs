@@ -1,37 +1,9 @@
-use std::{any::Any, collections::BTreeMap};
-
-use crate::{add_port, remove_port};
-use hmac::{Hmac, Mac};
-use sha1::Sha1;
+use crate::{add_port, get_sha_hash_from_url, hmac_sha1_base64, remove_port};
 use sha256::digest as sha256digest;
 
-type HmacSha1 = Hmac<Sha1>;
-
-pub fn hmac_sha1_base64<'a>(key: impl Into<&'a [u8]>, data: impl Into<&'a [u8]>) -> String {
-    let mut mac = HmacSha1::new_from_slice(key.into()).unwrap();
-    mac.update(data.into());
-    let bytes = mac.finalize().into_bytes().to_vec();
-    base64::encode(bytes)
-}
-
-pub fn validate_json_body(body: String, expected_signature: String) -> bool {
+fn validate_json_body(body: String, expected_signature: String) -> bool {
     let signature = sha256digest(body);
     signature == expected_signature
-}
-
-pub fn get_sha_hash_from_url(url: String) -> Result<Option<String>, url::ParseError> {
-    let parsed = url::Url::parse(url.as_str());
-    if let Err(err) = parsed {
-        return Err(err);
-    }
-    let parsed = parsed.unwrap();
-    let pairs = parsed.query_pairs();
-    for (key, value) in pairs {
-        if key == "bodySHA256" {
-            return Ok(Some(value.to_owned().to_string()));
-        }
-    }
-    return Ok(None);
 }
 
 pub fn get_expected_twilio_signature<'a>(
@@ -44,7 +16,7 @@ pub fn get_expected_twilio_signature<'a>(
     for param in params {
         builder.extend_from_slice(param.as_bytes());
     }
-    return hmac_sha1_base64(auth_token.as_bytes(), builder.as_slice());
+    return hmac_sha1_base64(auth_token, builder.as_slice());
 }
 
 pub fn parse_and_sort_urlencoded_body<'a>(body: &'a str) -> Vec<String> {
@@ -52,25 +24,6 @@ pub fn parse_and_sort_urlencoded_body<'a>(body: &'a str) -> Vec<String> {
     let mut as_vec: Vec<_> = parsed.collect();
     as_vec.sort_by_key(move |(k, _v)| k.clone());
     as_vec.iter().map(|(k, v)| format!("{}{}", k, v)).collect()
-}
-
-pub fn validate_body(
-    auth_token: String,
-    url: String,
-    body: String,
-    expected_signature: String,
-) -> bool {
-    unimplemented!()
-}
-
-pub fn validate_urlencoded<'a>(
-    auth_token: &'a str,
-    signature: &'a str,
-    url: &'a str,
-    body: &'a str,
-) -> bool {
-    let params = parse_and_sort_urlencoded_body(body);
-    return validate_url(auth_token, signature, url, params);
 }
 
 pub fn validate_url<'a>(
@@ -98,14 +51,14 @@ pub fn validate_request_with_body<'a>(
     body: &'a str,
 ) -> bool {
     // If the request has a bodySHA256 param, it is in JSON
-    match get_sha_hash_from_url(url.to_string()) {
+    match get_sha_hash_from_url(url) {
         Err(_) => {
             // Invalid URL
             return false;
         }
         Ok(None) => {
-            // URL encoded form
-            return validate_urlencoded(auth_token, signature, url, body);
+            let params = parse_and_sort_urlencoded_body(body);
+            return validate_url(auth_token, signature, url, params);
         }
         Ok(Some(sha_hash)) => {
             return validate_url(auth_token, signature, url, vec![])
@@ -116,6 +69,8 @@ pub fn validate_request_with_body<'a>(
 
 #[cfg(test)]
 mod tests {
+    use crate::get_sha_hash_from_url;
+
     use super::*;
 
     #[test]
@@ -124,7 +79,7 @@ mod tests {
             "0a1ff7634d9ab3b95db5c9a2dfe9416e41502b283a80c7cf19632632f96e6620".to_string();
         let request_url = "https://mycompany.com/myapp.php?foo=1&bar=2";
         let request_url_with_hash = format!("{}&bodySHA256={}", request_url, body_signature);
-        let actual = get_sha_hash_from_url(request_url_with_hash);
+        let actual = get_sha_hash_from_url(request_url_with_hash.as_str());
         assert_eq!(actual, Ok(Some(body_signature)));
     }
 
@@ -134,7 +89,7 @@ mod tests {
         let key = "secret_key";
         let expected = "lwSWI7Dl0gv2vrUxPYBgDj1qvlY=";
 
-        let actual = hmac_sha1_base64(key.as_bytes(), body.as_bytes());
+        let actual = hmac_sha1_base64(key, body.as_bytes());
         assert_eq!(actual, expected);
     }
 
