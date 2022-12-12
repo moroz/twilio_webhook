@@ -9,3 +9,8 @@ pub use url_helpers::remove_port;
 
 pub use hash_helpers::hmac_sha1_base64;
 pub use hash_helpers::HmacSha1;
+
+pub use hash::get_expected_twilio_signature;
+pub use hash::parse_and_sort_urlencoded_body;
+pub use hash::validate_request_with_body;
+pub use hash::validate_url;
